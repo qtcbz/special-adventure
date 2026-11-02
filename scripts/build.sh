@@ -31,12 +31,21 @@ sudo -u builder ln -sf aur.db.tar.zst "$REPO_DIR/aur.db"
 printf '\n[aur]\nSigLevel = Optional TrustAll\nServer = file://%s\n' "$REPO_DIR" >> /etc/pacman.conf
 pacman -Sy --noconfirm
 
+# git sources that follow a branch instead of a fixed commit or tag (VCS packages)
+vcs_specs() {  # .SRCINFO path -> one "git+url[#branch=x]" per line
+  awk -F' = ' '$1 ~ /^\tsource(_x86_64)?$/ {print $2}' "$1" | sed -E 's/^[^/]*:://' \
+    | grep '^git+' | grep -Ev '#(commit|tag)=' | sort -u || true
+}
+
 # --- check out every pinned package at its reviewed commit ---
-declare -A commit owner keep   # commit[aur repo]; owner[pkgname or provides] = aur repo
+# packages/<name>: line 1 is the AUR commit; for VCS packages each further line
+# is "<git source> <upstream commit>", the reviewed upstream commit to build.
+declare -A commit owner keep pins   # commit[aur repo]; owner[pkgname or provides] = aur repo
 for f in packages/*; do
   name=${f#packages/}
   [[ $name == README.md ]] && continue
-  rev=$(tr -d '[:space:]' < "$f")
+  rev=$(head -n1 "$f" | tr -d '[:space:]')
+  pins[$name]=$(tail -n +2 "$f" | awk 'NF==2')
   if [[ -z $rev ]]; then
     echo "::warning::$name is not pinned yet, skipping it (merge its PR from the update check)"
     keep[$name]=1   # leave any already-published build alone until it's pinned
@@ -55,8 +64,43 @@ for name in "${!commit[@]}"; do
   done < "$d/.SRCINFO"
 done
 
+# --- build VCS sources at their pinned upstream commit, never at branch HEAD ---
+errors=()
+for name in "${!commit[@]}"; do
+  d=$WORK/$name
+  for spec in $(vcs_specs "$d/.SRCINFO"); do
+    pin=$(awk -v s="$spec" '$1==s {print $2}' <<<"${pins[$name]}")
+    if [[ -z $pin ]]; then
+      errors+=("$name: upstream source $spec has no pinned commit in packages/$name (merge its PR from the update check)")
+      continue
+    fi
+    # Appended to the PKGBUILD so it runs after source=() is set: rewrite that
+    # source to "#commit=<pin>". makepkg then checks out exactly that commit.
+    printf '_sa_pin %q %q\n' "$spec" "$pin" >> "$WORK/$name.pins"
+  done
+  if [[ -f $WORK/$name.pins ]]; then
+    { cat <<'PIN'
+
+# --- added by special-adventure: build pinned upstream commits ---
+_sa_pin() {
+  local a i s n
+  for a in source source_x86_64; do
+    local -n _arr=$a
+    for i in "${!_arr[@]}"; do
+      s=${_arr[$i]}; n=
+      if [[ $s == *::* ]]; then n=${s%%::*}::; s=${s#*::}; fi
+      if [[ $s == "$1" ]]; then _arr[$i]="$n${1%%#*}#commit=$2"; fi
+    done
+    unset -n _arr
+  done
+}
+PIN
+      cat "$WORK/$name.pins"; } | sudo -u builder tee -a "$d/PKGBUILD" >/dev/null
+  fi
+done
+
 # --- dependency order, and make sure every AUR dependency is pinned too ---
-edges=$(mktemp); errors=()
+edges=$(mktemp)
 for name in "${!commit[@]}"; do
   echo "$name $name" >> "$edges"
   while read -r k _ v; do
