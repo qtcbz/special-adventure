@@ -42,7 +42,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      REPO_DIR: ${{ runner.temp }}/aur
+      REPO_DIR: ${{ github.workspace }}/aur-out
     steps:
       - uses: actions/checkout@v5
         with:
@@ -50,6 +50,6 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: aur-repo
-          path: ${{ runner.temp }}/aur
+          path: aur-out
       - name: Publish
         run: bash scripts/publish.sh

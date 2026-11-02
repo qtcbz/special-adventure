@@ -53,7 +53,7 @@ for f in packages/*; do
   name=${f#packages/}
   [[ $name == README.md ]] && continue
   old=$(tr -d '[:space:]' < "$f")
-  new=$(git ls-remote "https://aur.archlinux.org/$name.git" HEAD | cut -f1)
+  new=$(git ls-remote "https://aur.archlinux.org/$name.git" HEAD | head -1 | cut -f1)
   if [[ -z $new ]]; then echo "::warning::$name was not found in the AUR"; continue; fi
   [[ $new == "$old" ]] && continue
 
@@ -76,7 +76,7 @@ for f in packages/*; do
     d=$(clone "$cur")
     for dep in $(aur_deps "$d"); do
       [[ -e packages/$dep ]] && continue
-      dep_head=$(git ls-remote "https://aur.archlinux.org/$dep.git" HEAD | cut -f1)
+      dep_head=$(git ls-remote "https://aur.archlinux.org/$dep.git" HEAD | head -1 | cut -f1)
       echo "$dep_head" > "packages/$dep"
       added+=("$dep"); queue+=("$dep")
       body+=$'\n'"$(section "$dep" "" "$dep_head")"
