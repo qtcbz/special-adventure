@@ -12,6 +12,43 @@ TAG=repo
 
 pacman -Syu --noconfirm --needed git github-cli pacman-contrib
 sed -i 's/^\(OPTIONS=.*\)\bdebug\b/\1!debug/' /etc/makepkg.conf   # no -debug packages
+
+# Build for the machines that install these packages, not for whatever CPU the
+# GitHub runner has: x86-64-v3 runs on both the Zen 4 box and the i7-7700K
+# (no AVX-512 there), tuned for Zen 4.
+MARCH=x86-64-v3 MTUNE=znver4 ZIGCPU=x86_64_v3
+install -d /etc/makepkg.conf.d
+cat > /etc/makepkg.conf.d/march.conf <<EOF
+CFLAGS="\${CFLAGS/-march=x86-64 -mtune=generic/-march=$MARCH -mtune=$MTUNE}"
+CXXFLAGS="\${CXXFLAGS/-march=x86-64 -mtune=generic/-march=$MARCH -mtune=$MTUNE}"
+RUSTFLAGS="\$RUSTFLAGS -C target-cpu=$MARCH"
+EOF
+# Some builds hard-code -march=native (or, for zig, default to the host CPU),
+# which ignores the flags above. Wrappers earlier in PATH swap in $MARCH.
+for c in cc gcc c++ g++ clang clang++; do
+  cat > "/usr/local/bin/$c" <<EOF
+#!/bin/bash
+args=()
+for a in "\$@"; do
+  case \$a in
+    -march=native) a=-march=$MARCH; echo "$c wrapper: -march=native -> $MARCH" >&2 ;;
+    -mtune=native) a=-mtune=$MTUNE ;;
+  esac
+  args+=("\$a")
+done
+exec /usr/bin/$c "\${args[@]}"
+EOF
+done
+cat > /usr/local/bin/zig <<EOF
+#!/bin/bash
+# zig build targets the host CPU unless -Dcpu is given (needs standardTargetOptions).
+if [[ \${1:-} == build && " \$* " != *" -Dcpu="* ]] && grep -qs standardTargetOptions build.zig; then
+  echo "zig wrapper: adding -Dcpu=$ZIGCPU" >&2
+  set -- "\$@" -Dcpu=$ZIGCPU
+fi
+exec /usr/bin/zig "\$@"
+EOF
+chmod 755 /usr/local/bin/{cc,gcc,c++,g++,clang,clang++,zig}
 useradd -m builder
 echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
 # Let makepkg fetch PGP keys for sources that are signed.
