@@ -4,7 +4,10 @@ on:
     paths: ['packages/**', 'scripts/**', '.github/workflows/build.yml']
   workflow_dispatch:
 concurrency:
-  group: aur-build
+  # Per branch: a test build of a review branch must not replace a pending
+  # main build (GitHub keeps only the newest pending run in a group).
+  # Superseded main runs are fine to drop, since each main build is cumulative.
+  group: aur-build-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   # Runs AUR code (PKGBUILDs), so it only gets a read-only token.

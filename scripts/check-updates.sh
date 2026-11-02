@@ -105,8 +105,13 @@ section() {  # name old new -> markdown for one package
 for f in packages/*; do
   name=${f#packages/}
   [[ $name == README.md ]] && continue
-  old=$(head -n1 "$f" | tr -d '[:space:]')
-  oldpins=$(tail -n +2 "$f" | awk 'NF==2')
+  # Read the pins from the latest $BASE, not this run's checkout: a review PR
+  # merged while this run was going would otherwise look unpinned and get
+  # reopened as a duplicate.
+  git fetch -q origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"
+  cur=$(git show "origin/$BASE:packages/$name" 2>/dev/null) || continue   # removed meanwhile
+  old=$(head -n1 <<<"$cur" | tr -d '[:space:]')
+  oldpins=$(tail -n +2 <<<"$cur" | awk 'NF==2')
   new=$(git ls-remote "$AUR/$name.git" HEAD | head -1 | cut -f1)
   if [[ -z $new ]]; then echo "::warning::$name was not found in the AUR"; continue; fi
   [[ $new == "$old" && -z $oldpins ]] && continue   # not a VCS package, nothing new
