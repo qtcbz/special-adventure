@@ -1,0 +1,27 @@
+name: Build AUR packages
+on:
+  push:
+  schedule:
+    - cron: '17 9 * * *'   # daily, picks up new AUR versions
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: aur-build
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Install git
+        run: pacman -Sy --noconfirm --needed git
+      - uses: actions/checkout@v4
+      - name: Build
+        run: bash scripts/build.sh
+      - name: Publish
+        if: github.ref == 'refs/heads/main'
+        run: bash scripts/publish.sh
