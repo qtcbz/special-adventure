@@ -22,4 +22,5 @@ pacman repo named `aur` on the rolling [`repo` release](../../releases/tag/repo)
 
 Builds run in a fresh `archlinux:base-devel` container with a read-only token;
 a separate job with write access publishes the result and never runs AUR code.
-Pushes to other branches build without publishing.
+Pushes to other branches build without publishing, and the update check starts
+a test build for each review PR (see the Actions tab).

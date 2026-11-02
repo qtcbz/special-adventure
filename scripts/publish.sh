@@ -17,10 +17,14 @@ done
 mapfile -t local_files < <(ls -1 -- *.pkg.tar.zst aur.db aur.db.tar.zst aur.files aur.files.tar.zst 2>/dev/null)
 
 mapfile -t remote < <(gh release view "$TAG" --json assets --jq '.assets[].name')
+# Order matters for anyone syncing [aur] mid-publish: new packages first, then
+# the db that references them, and only then remove packages the db dropped.
 for name in "${local_files[@]}"; do
-  if [[ $name == aur.* ]] || ! printf '%s\n' "${remote[@]}" | grep -qxF "$name"; then
-    gh release upload "$TAG" "$name" --clobber
-  fi
+  [[ $name == aur.* ]] && continue
+  printf '%s\n' "${remote[@]}" | grep -qxF "$name" || gh release upload "$TAG" "$name" --clobber
+done
+for name in "${local_files[@]}"; do
+  [[ $name == aur.* ]] && gh release upload "$TAG" "$name" --clobber
 done
 for name in "${remote[@]}"; do
   printf '%s\n' "${local_files[@]}" | grep -qxF "$name" || gh release delete-asset "$TAG" "$name" -y

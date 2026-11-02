@@ -9,6 +9,7 @@ set -euo pipefail
 BASE=${BASE:-main}
 EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
 MAX_DIFF=55000
+MAX_BODY=60000
 WORK=$(mktemp -d)
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -58,9 +59,12 @@ for f in packages/*; do
   [[ $new == "$old" ]] && continue
 
   branch="aur-update/$name"
+  # Skip only when an open PR already carries this commit. Checking the branch
+  # alone would skip forever if the push succeeded but creating the PR failed.
   if git fetch -q origin "$branch" 2>/dev/null \
-     && [[ $(git show "FETCH_HEAD:packages/$name" | tr -d '[:space:]') == "$new" ]]; then
-    echo "$name: PR branch already at $new"
+     && [[ $(git show "FETCH_HEAD:packages/$name" | tr -d '[:space:]') == "$new" ]] \
+     && [[ -n $(gh pr list --head "$branch" --state open --json number --jq '.[].number') ]]; then
+    echo "$name: open PR already at $new"
     continue
   fi
   echo "$name: ${old:-unpinned} -> $new"
@@ -88,6 +92,13 @@ for f in packages/*; do
   intro="Review the changes below before merging. Merging builds this and publishes it to every machine using the homelab repo."
   (( ${#added[@]} )) && intro+=$'\n\n'"This also pins new AUR dependencies: ${added[*]}."
   body="$intro"$'\n\n'"$body"
+  # GitHub rejects bodies over 65536 characters; a new package with new
+  # dependencies can exceed that. Cut it and close any fence left open.
+  if (( ${#body} > MAX_BODY )); then
+    body="${body:0:$MAX_BODY}"
+    (( $(grep -c '^````' <<<"$body") % 2 )) && body+=$'\n````'
+    body+=$'\n\n... (truncated: the PR body hit GitHub'"'"'s size limit; review the rest at the AUR links above)'
+  fi
 
   git add packages
   git commit -q -m "$title"
@@ -97,5 +108,9 @@ for f in packages/*; do
   else
     gh pr create --base "$BASE" --head "$branch" --title "$title" --body "$body"
   fi
+  # Pushes made with GITHUB_TOKEN never trigger build.yml, so start a test build
+  # of the branch by hand (publishing is skipped off main). It shows in Actions.
+  gh workflow run build.yml --ref "$branch" \
+    || echo "::warning::could not start a test build for $branch"
   git checkout -q "origin/$BASE"
 done

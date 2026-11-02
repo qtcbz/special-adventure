@@ -16,6 +16,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write   # to start a test build of each PR branch
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
