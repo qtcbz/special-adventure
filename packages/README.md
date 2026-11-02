@@ -11,3 +11,8 @@ The file holds the AUR git commit that was reviewed and is allowed to be built.
 - **Remove a package:** delete its file. The next build drops it from the repo.
 
 Empty (unpinned) files are never built.
+
+**VCS packages (`-git` etc.)** build whatever upstream commit is current when
+the build runs: the pin covers the PKGBUILD, not the upstream code. They are
+rebuilt only when that upstream commit gives a new version, and any build run
+(a merged PR, a manual run) picks up upstream changes without a review PR.

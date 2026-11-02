@@ -76,9 +76,22 @@ if (( ${#errors[@]} )); then
 fi
 
 # --- build anything whose pinned version isn't in the repo yet ---
+srcinfo_ver() {  # .SRCINFO text on stdin -> [epoch:]pkgver-pkgrel
+  awk -F' = ' '$1=="\tepoch"&&!e{e=$2":"} $1=="\tpkgver"&&!v{v=$2} $1=="\tpkgrel"&&!r{r=$2} END{print e v "-" r}'
+}
 for name in $(tsort "$edges"); do
   d=$WORK/$name
-  ver=$(awk -F' = ' '$1=="\tepoch"&&!e{e=$2":"} $1=="\tpkgver"&&!v{v=$2} $1=="\tpkgrel"&&!r{r=$2} END{print e v "-" r}' "$d/.SRCINFO")
+  ver=$(srcinfo_ver < "$d/.SRCINFO")
+  # VCS packages (-git etc.) work out their real version in pkgver() from the
+  # upstream checkout; .SRCINFO only has whatever the AUR maintainer last saw.
+  # Fetch the sources and run pkgver() so the check below compares the version
+  # that would actually be built. Otherwise they'd be rebuilt on every run, and
+  # a rebuild of an unchanged version reuses the file name, which publish.sh
+  # doesn't re-upload while the db gets the new checksum.
+  if grep -Eq '^[[:space:]]*pkgver[[:space:]]*\(\)' "$d/PKGBUILD"; then
+    (cd "$d" && sudo -u builder makepkg --nobuild --noprepare --nodeps --noconfirm)
+    ver=$(cd "$d" && sudo -u builder makepkg --printsrcinfo | srcinfo_ver)
+  fi
   first=$(awk -F' = ' '$1=="pkgname"{print $2; exit}' "$d/.SRCINFO")
   have=$(pacman -Si "aur/$first" 2>/dev/null | awk -F' *: ' '$1=="Version"{print $2}' || true)
   if [[ $have == "$ver" ]]; then
@@ -88,8 +101,12 @@ for name in $(tsort "$edges"); do
   echo "::group::Build $name $ver (pinned ${commit[$name]})"
   (cd "$d" && sudo -u builder makepkg --syncdeps --noconfirm)
   for pkg in "$d"/*.pkg.tar.zst; do
-    sudo -u builder cp "$pkg" "$REPO_DIR/"
-    sudo -u builder repo-add -q -R "$DB" "$REPO_DIR/${pkg##*/}"
+    # Packages with an epoch have a ':' in the file name, which GitHub renames
+    # on upload, so the db would point at a file that doesn't exist. pacman
+    # only needs the name to match the db, so store it without the ':'.
+    file=${pkg##*/}; file=${file//:/.}
+    sudo -u builder cp "$pkg" "$REPO_DIR/$file"
+    sudo -u builder repo-add -q -R "$DB" "$REPO_DIR/$file"
   done
   pacman -Sy --noconfirm
   echo "::endgroup::"
