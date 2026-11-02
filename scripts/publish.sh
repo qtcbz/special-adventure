@@ -2,7 +2,7 @@
 # Uploads the local "aur" repo to the rolling "repo" release and deletes
 # assets for package versions that are no longer in the repo.
 set -euo pipefail
-REPO_DIR=/home/builder/repo
+REPO_DIR=/srv/aur
 TAG=repo
 
 gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "AUR builds" \

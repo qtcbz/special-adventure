@@ -5,7 +5,7 @@
 # packages are not rebuilt.
 set -euo pipefail
 
-REPO_DIR=/home/builder/repo
+REPO_DIR=/srv/aur
 DB="$REPO_DIR/aur.db.tar.zst"
 TAG=repo
 
@@ -18,7 +18,7 @@ printf 'keyserver hkps://keyserver.ubuntu.com\nkeyserver-options auto-key-retrie
   | sudo -u builder tee /home/builder/.gnupg/gpg.conf >/dev/null
 
 # Seed the local repo from the published release.
-sudo -u builder mkdir -p "$REPO_DIR"
+install -d -o builder -g builder -m 755 "$REPO_DIR"
 if gh release view "$TAG" >/dev/null 2>&1; then
   gh release download "$TAG" -D "$REPO_DIR" --clobber
   rm -f "$REPO_DIR"/aur.db "$REPO_DIR"/aur.files
