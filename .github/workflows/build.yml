@@ -1,27 +1,55 @@
 name: Build AUR packages
 on:
   push:
-  schedule:
-    - cron: '17 9 * * *'   # daily, picks up new AUR versions
+    paths: ['packages/**', 'scripts/**', '.github/workflows/build.yml']
   workflow_dispatch:
-permissions:
-  contents: write
 concurrency:
   group: aur-build
   cancel-in-progress: false
 jobs:
+  # Runs AUR code (PKGBUILDs), so it only gets a read-only token.
   build:
     runs-on: ubuntu-latest
     container: archlinux:base-devel
+    permissions:
+      contents: read
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
       - name: Install git
         run: pacman -Sy --noconfirm --needed git
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - name: Build
         run: bash scripts/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aur-repo
+          path: /srv/aur/
+          retention-days: 3
+          if-no-files-found: error
+
+  # Has write access, but never runs anything from the AUR: it only uploads
+  # the files the build job produced.
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      REPO_DIR: ${{ runner.temp }}/aur
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: aur-repo
+          path: ${{ runner.temp }}/aur
       - name: Publish
-        if: github.ref == 'refs/heads/main'
         run: bash scripts/publish.sh

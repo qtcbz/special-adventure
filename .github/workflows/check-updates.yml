@@ -1,0 +1,24 @@
+name: Check AUR updates
+on:
+  push:
+    branches: [main]
+    paths: ['packages/**']
+  schedule:
+    - cron: '17 9 * * *'   # daily
+  workflow_dispatch:
+concurrency:
+  group: aur-check
+  cancel-in-progress: false
+jobs:
+  # Reads AUR git history and opens review PRs. Never builds or runs AUR code.
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Open PRs for packages that need review
+        run: bash scripts/check-updates.sh

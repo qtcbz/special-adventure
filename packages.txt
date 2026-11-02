@@ -1,2 +1,0 @@
-# AUR packages to build, one per line. Their AUR dependencies are pulled in
-# automatically. Lines starting with # are ignored.
