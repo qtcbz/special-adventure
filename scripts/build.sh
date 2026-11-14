@@ -1,27 +1,45 @@
 #!/bin/bash
 # Runs inside an archlinux:base-devel container (see .github/workflows/build.yml).
 # Builds every pinned package in packages/ at its pinned AUR commit into a pacman
-# repo named "aur". The repo is seeded from the current "repo" release, so
-# packages whose version hasn't changed are not rebuilt.
+# repo named "aur", for one CPU target (TARGET):
+#   x86-64-v3  -> release "repo"            (baseline; the Pi serves it as [homelab])
+#   x86-64-v4  -> release "repo-x86-64-v4"  ([homelab-v4])
+#   znver4     -> release "repo-znver4"     ([homelab-znver4])
+# The repo is seeded from the target's current release, so packages whose
+# version hasn't changed are not rebuilt.
+#
+# The v4 and znver4 repos only hold packages that actually compile something.
+# Packages that are arch=any or have no build() step (prebuilt -bin packages,
+# DKMS sources) would come out identical, so they are skipped there and machines
+# get them from the baseline repo. BASE_DIR points at the baseline build
+# (the x86-64-v3 job's output), so those packages can still be build deps.
 set -euo pipefail
 
+TARGET=${TARGET:-x86-64-v3}
 REPO_DIR=/srv/aur
 DB="$REPO_DIR/aur.db.tar.zst"
 WORK=/home/builder/src
-TAG=repo
+BASE_DIR=${BASE_DIR:-}
+
+# Build for the machines that install these packages, not for whatever CPU the
+# GitHub runner has.
+case $TARGET in
+  x86-64-v3) TAG=repo           MARCH=x86-64-v3 MTUNE=generic RUSTCPU=x86-64-v3 ZIGCPU=x86_64_v3 ;;
+  x86-64-v4) TAG=repo-x86-64-v4 MARCH=x86-64-v4 MTUNE=generic RUSTCPU=x86-64-v4 ZIGCPU=x86_64_v4 ;;
+  znver4)    TAG=repo-znver4    MARCH=znver4    MTUNE=znver4  RUSTCPU=znver4    ZIGCPU=znver4 ;;
+  *) echo "::error::unknown TARGET $TARGET"; exit 1 ;;
+esac
+BASELINE=0; [[ $TARGET == x86-64-v3 ]] && BASELINE=1
+echo "Target $TARGET: -march=$MARCH -mtune=$MTUNE, publishes to release $TAG"
 
 pacman -Syu --noconfirm --needed git github-cli pacman-contrib
 sed -i 's/^\(OPTIONS=.*\)\bdebug\b/\1!debug/' /etc/makepkg.conf   # no -debug packages
 
-# Build for the machines that install these packages, not for whatever CPU the
-# GitHub runner has: x86-64-v3 runs on both the Zen 4 box and the i7-7700K
-# (no AVX-512 there), tuned for Zen 4.
-MARCH=x86-64-v3 MTUNE=znver4 ZIGCPU=x86_64_v3
 install -d /etc/makepkg.conf.d
 cat > /etc/makepkg.conf.d/march.conf <<EOF
 CFLAGS="\${CFLAGS/-march=x86-64 -mtune=generic/-march=$MARCH -mtune=$MTUNE}"
 CXXFLAGS="\${CXXFLAGS/-march=x86-64 -mtune=generic/-march=$MARCH -mtune=$MTUNE}"
-RUSTFLAGS="\$RUSTFLAGS -C target-cpu=$MARCH"
+RUSTFLAGS="\$RUSTFLAGS -C target-cpu=$RUSTCPU"
 EOF
 # Some builds hard-code -march=native (or, for zig, default to the host CPU),
 # which ignores the flags above. Wrappers earlier in PATH swap in $MARCH.
@@ -66,6 +84,11 @@ fi
 [[ -f $DB ]] || sudo -u builder bsdtar -c --zstd -f "$DB" -T /dev/null
 sudo -u builder ln -sf aur.db.tar.zst "$REPO_DIR/aur.db"
 printf '\n[aur]\nSigLevel = Optional TrustAll\nServer = file://%s\n' "$REPO_DIR" >> /etc/pacman.conf
+if (( ! BASELINE )); then
+  [[ -f $BASE_DIR/aur.db.tar.zst ]] || { echo "::error::BASE_DIR has no baseline build"; exit 1; }
+  ln -sf aur.db.tar.zst "$BASE_DIR/aur-base.db"
+  printf '\n[aur-base]\nSigLevel = Optional TrustAll\nServer = file://%s\n' "$BASE_DIR" >> /etc/pacman.conf
+fi
 pacman -Sy --noconfirm
 
 # git sources that follow a branch instead of a fixed commit or tag (VCS packages)
@@ -147,7 +170,7 @@ for name in "${!commit[@]}"; do
       [[ ${owner[$dep]} != "$name" ]] && echo "${owner[$dep]} $name" >> "$edges"
     else
       r=$(pacman -Sp --print-format '%r' "$dep" 2>/dev/null | tail -1 || true)
-      [[ -n $r && $r != aur ]] || errors+=("$dep (needed by $name) is not in the official repos and not pinned in packages/")
+      [[ -n $r && $r != aur && $r != aur-base ]] || errors+=("$dep (needed by $name) is not in the official repos and not pinned in packages/")
     fi
   done < "$WORK/$name/.SRCINFO"
 done
@@ -160,8 +183,18 @@ fi
 srcinfo_ver() {  # .SRCINFO text on stdin -> [epoch:]pkgver-pkgrel
   awk -F' = ' '$1=="\tepoch"&&!e{e=$2":"} $1=="\tpkgver"&&!v{v=$2} $1=="\tpkgrel"&&!r{r=$2} END{print e v "-" r}'
 }
+same_on_every_cpu() {  # dir: nothing gets compiled, so the baseline build is enough
+  awk -F' = ' '$1=="\tarch" && $2!="any" {f=1} END {exit f}' "$1/.SRCINFO" && return 0
+  ! grep -Eq '^[[:space:]]*(function[[:space:]]+)?build[[:space:]]*\(\)' "$1/PKGBUILD"
+}
+declare -A skip
 for name in $(tsort "$edges"); do
   d=$WORK/$name
+  if (( ! BASELINE )) && same_on_every_cpu "$d"; then
+    echo "$name: nothing to compile, $TARGET machines use the baseline build"
+    skip[$name]=1
+    continue
+  fi
   ver=$(srcinfo_ver < "$d/.SRCINFO")
   # VCS packages (-git etc.) work out their real version in pkgver() from the
   # upstream checkout; .SRCINFO only has whatever the AUR maintainer last saw.
@@ -195,9 +228,12 @@ done
 
 # --- drop packages that are no longer pinned ---
 while read -r _ pkg _; do
-  [[ -n ${owner[$pkg]:-} || -n ${keep[$pkg]:-} ]] && continue
+  o=${owner[$pkg]:-}
+  [[ ( -n $o && -z ${skip[$o]:-} ) || -n ${keep[$pkg]:-} ]] && continue
   file=$(pacman -Sp --print-format '%f' "aur/$pkg")
-  echo "removing $pkg (no longer in packages/)"
+  # A skipped package must not linger here either: machines list this repo
+  # first, so an old copy would hide the baseline's newer one.
+  echo "removing $pkg (no longer in packages/, or the baseline build is used for it)"
   sudo -u builder repo-remove -q "$DB" "$pkg"
   rm -f "$REPO_DIR/$file"
 done < <(pacman -Sl aur)

@@ -10,7 +10,10 @@ concurrency:
   group: aur-build-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  # Runs AUR code (PKGBUILDs), so it only gets a read-only token.
+  # Every package is built for three CPU targets (see scripts/build.sh):
+  # x86-64-v3 first, as the baseline, then x86-64-v4 and znver4, which reuse
+  # the baseline for packages that don't compile anything.
+  # These jobs run AUR code (PKGBUILDs), so they only get a read-only token.
   build:
     runs-on: ubuntu-latest
     container: archlinux:base-devel
@@ -19,6 +22,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      TARGET: x86-64-v3
     steps:
       - name: Install git
         run: pacman -Sy --noconfirm --needed git
@@ -29,15 +33,50 @@ jobs:
         run: bash scripts/build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: aur-repo
+          name: aur-repo-x86-64-v3
+          path: /srv/aur/
+          retention-days: 3
+          if-no-files-found: error
+
+  build-optimized:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86-64-v4, znver4]
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TARGET: ${{ matrix.target }}
+      BASE_DIR: /srv/aur-base
+    steps:
+      - name: Install git
+        run: pacman -Sy --noconfirm --needed git
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: aur-repo-x86-64-v3
+          path: /srv/aur-base
+      - name: Build
+        run: bash scripts/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aur-repo-${{ matrix.target }}
           path: /srv/aur/
           retention-days: 3
           if-no-files-found: error
 
   # Has write access, but never runs anything from the AUR: it only uploads
-  # the files the build job produced.
+  # the files the build jobs produced. It runs only if all three targets
+  # built, so the repos never drift apart.
   publish:
-    needs: build
+    needs: [build, build-optimized]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -45,14 +84,18 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      REPO_DIR: ${{ github.workspace }}/aur-out
     steps:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
-          name: aur-repo
+          pattern: aur-repo-*
           path: aur-out
-      - name: Publish
-        run: bash scripts/publish.sh
+      # Baseline first: the other repos fall back to it for skipped packages.
+      - name: Publish x86-64-v3 (release "repo")
+        run: bash scripts/publish.sh aur-out/aur-repo-x86-64-v3 repo x86-64-v3
+      - name: Publish x86-64-v4
+        run: bash scripts/publish.sh aur-out/aur-repo-x86-64-v4 repo-x86-64-v4 x86-64-v4
+      - name: Publish znver4
+        run: bash scripts/publish.sh aur-out/aur-repo-znver4 repo-znver4 znver4

@@ -1,13 +1,18 @@
 #!/bin/bash
-# Uploads the local "aur" repo to the rolling "repo" release and deletes
-# assets for package versions that are no longer in the repo.
+# Uploads a local "aur" repo to its rolling release and deletes assets for
+# package versions that are no longer in the repo.
+#   publish.sh <dir> <release tag> <cpu target>
 # Runs in a separate job from the build, so no AUR code ever runs with write access.
 set -euo pipefail
-REPO_DIR=${REPO_DIR:-/srv/aur}
-TAG=repo
+REPO_DIR=${1:-/srv/aur}
+TAG=${2:-repo}
+TARGET=${3:-x86-64-v3}
 
-gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "AUR builds" \
-  --notes "Rolling pacman repo. Server = https://github.com/$GH_REPO/releases/download/$TAG"
+if ! gh release view "$TAG" >/dev/null 2>&1; then
+  notes="Rolling pacman repo, built for $TARGET. Server = https://github.com/$GH_REPO/releases/download/$TAG"
+  [[ $TAG == repo ]] || notes+=$'\n\nOnly packages that compile something are here. List it before the baseline [aur] repo (release "repo"), which has the rest.'
+  gh release create "$TAG" --title "AUR builds ($TARGET)" --notes "$notes"
+fi
 
 cd "$REPO_DIR"
 # GitHub assets cannot be symlinks; upload real copies under the names pacman requests.
